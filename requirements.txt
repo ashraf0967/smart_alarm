@@ -1,6 +1,5 @@
-flet>=0.20.0
-opencv-python-headless>=4.8.0
-numpy>=1.24.0
-mediapipe>=0.10.0
-pillow>=10.0.0
-scipy>=1.11.0  # لإضافة تصفية الصوت
+flet
+opencv-python-headless
+numpy
+Pillow
+mediapipe
