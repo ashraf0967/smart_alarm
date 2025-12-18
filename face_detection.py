@@ -1,5 +1,4 @@
 import cv2
-import mediapipe as mp
 import numpy as np
 from typing import Tuple, Optional
 import threading
@@ -8,108 +7,61 @@ import os
 
 class SmileDetector:
     def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.drawing_spec = self.mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
+        # تحميل مصنفات Haar Cascades
+        # OpenCV provides these XML files within the package data
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
         
-        # نقاط الوجه للابتسامة
-        self.LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291]
+        if self.face_cascade.empty() or self.smile_cascade.empty():
+            print("Warning: Haar cascade files not found or failed to load!")
+            
         self.is_smiling = False
-        self.smile_threshold = 0.3
+        self.smile_threshold = 1.5 # Boolean indicator for simple detection
         
-    def calculate_smile_ratio(self, landmarks, image_width, image_height) -> float:
-        """حساب نسبة الابتسامة بناءً على نقاط الشفاه"""
-        try:
-            # نقاط الشفاه العلوية والسفلية
-            upper_lip = [landmarks[13], landmarks[14]]
-            lower_lip = [landmarks[17], landmarks[18]]
-            lip_corners = [landmarks[61], landmarks[291]]
-            
-            # حساب المسافات
-            lip_height = abs(upper_lip[0].y * image_height - lower_lip[0].y * image_height)
-            lip_width = abs(lip_corners[0].x * image_width - lip_corners[1].x * image_width)
-            
-            if lip_width == 0:
-                return 0.0
-                
-            smile_ratio = lip_height / lip_width
-            return smile_ratio
-            
-        except Exception as e:
-            print(f"Error calculating smile ratio: {e}")
-            return 0.0
-    
     def detect_smile(self, frame) -> Tuple[bool, float, Optional[np.ndarray]]:
-        """الكشف عن الابتسامة في الإطار"""
+        """الكشف عن الابتسامة في الإطار باستخدام Haar Cascades"""
         try:
-            # تحويل BGR إلى RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb_frame.flags.writeable = False
+            if frame is None:
+                return False, 0.0, None
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
             
-            # معالجة الإطار
-            results = self.face_mesh.process(rgb_frame)
-            
-            # إعادة تمكين الكتابة للرسم
-            rgb_frame.flags.writeable = True
-            
+            self.is_smiling = False
             smile_ratio = 0.0
-            annotated_frame = None
+            annotated_frame = frame.copy()
             
-            if results.multi_face_landmarks:
-                for face_landmarks in results.multi_face_landmarks:
-                    # رسم نقاط الوجه
-                    annotated_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                    self.mp_drawing.draw_landmarks(
-                        image=annotated_frame,
-                        landmark_list=face_landmarks,
-                        connections=self.mp_face_mesh.FACEMESH_CONTOURS,
-                        landmark_drawing_spec=self.drawing_spec,
-                        connection_drawing_spec=self.drawing_spec
-                    )
-                    
-                    # حساب نسبة الابتسامة
-                    smile_ratio = self.calculate_smile_ratio(
-                        face_landmarks.landmark,
-                        annotated_frame.shape[1],
-                        annotated_frame.shape[0]
-                    )
-                    
-                    # التحقق من الابتسامة
-                    self.is_smiling = smile_ratio > self.smile_threshold
-                    
-                    # إضافة معلومات على الإطار
-                    cv2.putText(annotated_frame, 
-                              f"Smile Ratio: {smile_ratio:.2f}", 
-                              (10, 30), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 
-                              0.7, 
-                              (0, 255, 0) if self.is_smiling else (0, 0, 255), 
-                              2)
-                    
-                    if self.is_smiling:
-                        cv2.putText(annotated_frame, 
-                                  "SMILING! 😊", 
-                                  (10, 60), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 
-                                  1, 
-                                  (0, 255, 0), 
-                                  2)
+            for (x, y, w, h) in faces:
+                # رسم مربع حول الوجه
+                cv2.rectangle(annotated_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                
+                roi_gray = gray[y:y+h, x:x+w]
+                roi_color = annotated_frame[y:y+h, x:x+w]
+                
+                # البحث عن الابتسامة داخل منطقة الوجه (في النصف السفلي عادة)
+                smiles = self.smile_cascade.detectMultiScale(roi_gray, 1.7, 20)
+                
+                if len(smiles) > 0:
+                    self.is_smiling = True
+                    smile_ratio = 1.0 
+                    for (sx, sy, sw, sh) in smiles:
+                        cv2.rectangle(roi_color, (sx, sy), (sx+sw, sy+sh), (0, 255, 0), 2)
+                
+                # إضافة معلومات على الإطار
+                status_text = "SMILING! 😊" if self.is_smiling else "Detecting..."
+                color = (0, 255, 0) if self.is_smiling else (0, 0, 255)
+                cv2.putText(annotated_frame, status_text, (x, y-10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
             
             return self.is_smiling, smile_ratio, annotated_frame
             
         except Exception as e:
-            print(f"Error in smile detection: {e}")
-            return False, 0.0, None
+            print(f"Error in Haar smile detection: {e}")
+            return False, 0.0, frame
     
     def release(self):
         """تحرير الموارد"""
-        self.face_mesh.close()
+        pass
 
 class CameraManager:
     def __init__(self):
@@ -131,9 +83,8 @@ class CameraManager:
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.is_camera_active = True
-            self.current_frame = None # Reset frame
+            self.current_frame = None 
             
-            # خيط لقراءة الإطارات
             self.thread = threading.Thread(target=self._read_frames, daemon=True)
             self.thread.start()
             return True
@@ -151,14 +102,13 @@ class CameraManager:
                     if ret:
                         self.current_frame = frame
                     else:
-                        print("Failed to grab frame")
-                        time.sleep(1) # Wait before retry
+                        time.sleep(1) 
                 except Exception as e:
                     print(f"Camera read error: {e}")
                     time.sleep(1)
             else:
                 time.sleep(1)
-            time.sleep(0.03)  # ~30 إطار في الثانية
+            time.sleep(0.03)  
     
     def get_frame(self):
         """الحصول على الإطار الحالي"""
@@ -169,4 +119,5 @@ class CameraManager:
         self.is_camera_active = False
         if self.camera:
             self.camera.release()
+            self.camera = None
         cv2.destroyAllWindows()
