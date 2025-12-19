@@ -8,55 +8,96 @@ import os
 class SmileDetector:
     def __init__(self):
         # تحميل مصنفات Haar Cascades
-        # OpenCV provides these XML files within the package data
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+        self.face_cascade = cv2.CascadeClassifier()
+        self.smile_cascade = cv2.CascadeClassifier()
         
-        if self.face_cascade.empty() or self.smile_cascade.empty():
-            print("Warning: Haar cascade files not found or failed to load!")
+        # Paths to try (Standard + Local Fallback)
+        face_names = ['haarcascade_frontalface_default.xml']
+        smile_names = ['haarcascade_smile.xml']
+        
+        search_dirs = [
+            cv2.data.haarcascades,
+            "assets/cascades",
+            "cascades",
+            "."
+        ]
+        
+        # Load Face
+        loaded_face = False
+        for d in search_dirs:
+            p = os.path.join(d, face_names[0])
+            if os.path.exists(p) and self.face_cascade.load(p):
+                print(f"Loaded face cascade from: {p}")
+                loaded_face = True
+                break
+        
+        # Load Smile
+        loaded_smile = False
+        for d in search_dirs:
+            p = os.path.join(d, smile_names[0])
+            if os.path.exists(p) and self.smile_cascade.load(p):
+                print(f"Loaded smile cascade from: {p}")
+                loaded_smile = True
+                break
+
+        if not loaded_face or not loaded_smile:
+            print("WARNING: Cascades failed to load. Smile detection will not work.")
             
         self.is_smiling = False
-        self.smile_threshold = 1.5 # Boolean indicator for simple detection
+        self.smile_count = 0 
         
     def detect_smile(self, frame) -> Tuple[bool, float, Optional[np.ndarray]]:
-        """الكشف عن الابتسامة في الإطار باستخدام Haar Cascades"""
+        """الكشف عن الابتسامة في الإطار باستخدام Haar Cascades مع دعم للمحاولات المتعددة"""
         try:
             if frame is None:
                 return False, 0.0, None
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+            # scaleFactor=1.2 for faster/more tolerant face detection
+            faces = self.face_cascade.detectMultiScale(gray, 1.2, 5)
             
             self.is_smiling = False
             smile_ratio = 0.0
             annotated_frame = frame.copy()
             
             for (x, y, w, h) in faces:
-                # رسم مربع حول الوجه
+                # رسم مربع الوجه
                 cv2.rectangle(annotated_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
                 
-                roi_gray = gray[y:y+h, x:x+w]
-                roi_color = annotated_frame[y:y+h, x:x+w]
+                # منطقة البحث عن الفم (65% من أسفل الوجه وموسعة عرضياً)
+                roi_y = y + int(h * 0.5)
+                roi_h = int(h * 0.5)
+                roi_x = x + int(w * 0.1)
+                roi_w = int(w * 0.8)
                 
-                # البحث عن الابتسامة داخل منطقة الوجه (في النصف السفلي عادة)
-                smiles = self.smile_cascade.detectMultiScale(roi_gray, 1.7, 20)
+                roi_gray = gray[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
+                roi_color = annotated_frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
                 
+                # رسم مربع منطقة الفم (Cyan) للمساعدة البصرية
+                cv2.rectangle(annotated_frame, (roi_x, roi_y), (roi_x+roi_w, roi_y+roi_h), (255, 255, 0), 1)
+
+                # محاولة 1: معاملات عادية (Medium)
+                smiles = self.smile_cascade.detectMultiScale(roi_gray, 1.4, 10, minSize=(20, 20))
+                
+                # محاولة 2: إذا لم يجد شيئاً، نجرب معاملات أكثر مرونة (Lenient)
+                if len(smiles) == 0:
+                    smiles = self.smile_cascade.detectMultiScale(roi_gray, 1.2, 3, minSize=(15, 15))
+
                 if len(smiles) > 0:
                     self.is_smiling = True
-                    smile_ratio = 1.0 
+                    smile_ratio = 2.0 # قيمة كافية لتجاوز عتبة الـ UI
                     for (sx, sy, sw, sh) in smiles:
                         cv2.rectangle(roi_color, (sx, sy), (sx+sw, sy+sh), (0, 255, 0), 2)
                 
-                # إضافة معلومات على الإطار
-                status_text = "SMILING! 😊" if self.is_smiling else "Detecting..."
-                color = (0, 255, 0) if self.is_smiling else (0, 0, 255)
+                status_text = "FACE FOUND! SMILE!" if not self.is_smiling else "SMILE DETECTED! 😊"
+                color = (0, 255, 0) if self.is_smiling else (255, 255, 0)
                 cv2.putText(annotated_frame, status_text, (x, y-10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             
             return self.is_smiling, smile_ratio, annotated_frame
             
         except Exception as e:
-            print(f"Error in Haar smile detection: {e}")
+            print(f"Error in Multi-Pass smile detection: {e}")
             return False, 0.0, frame
     
     def release(self):
@@ -77,7 +118,6 @@ class CameraManager:
             self.camera = cv2.VideoCapture(camera_index, backend)
             
             if not self.camera.isOpened():
-                # تجربة كاميرا افتراضية بدون backend محدد
                 self.camera = cv2.VideoCapture(0)
             
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)

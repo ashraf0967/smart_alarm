@@ -18,58 +18,83 @@ class SmartAlarmApp:
         self.page = page
         self.page.title = "👋 Smart Smile Alarm"
         
-        # Window Settings
-        self.page.window.width = 400
-        self.page.window.height = 800
-        self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.bgcolor = ft.colors.BLACK
-        self.page.padding = 10
-        self.page.scroll = ft.ScrollMode.AUTO
-        
-        # Components
-        self.smile_detector = SmileDetector()
-        self.camera_manager = CameraManager()
-        self.alarm_manager = AlarmSoundManager()
-        
-        # Audio Setup
-        default_sound = self.alarm_manager.get_current_sound_path()
-        if not default_sound or not os.path.exists(default_sound):
-             default_sound = "assets/sounds/urgent.wav"
-        
-        # Determine strict path (Flet assets logic)
-        sound_filename = os.path.basename(default_sound)
-        initial_src = f"/sounds/{sound_filename}"
-        
-        self.audio_player = ft.Audio(src=initial_src, autoplay=False, volume=self.alarm_manager.volume)
-        self.page.overlay.append(self.audio_player)
-        
-        # State
-        self.alarms = [] 
-        self.active_alarm_id = None 
-        self.is_alarm_ringing = False
-        self.bedside_mode_active = False
-        self.stopping_alarm_lock = False
-        
-        self.smile_detected = False
-        self.smile_progress = 0.0
-        self.current_smile_status = False
-        
-        # State for Threads
-        self.monitor_thread_running = True
-        
-        # Load Data
-        self.load_alarms()
-        self.load_assets()
-        
-        # UI Setup
-        self.setup_ui()
-        
-        # Check First Run (Permission Request)
-        self.check_first_run()
+        try:
+            # Window Settings (Only apply to Desktop)
+            if not any([page.platform == p for p in [ft.PagePlatform.ANDROID, ft.PagePlatform.IOS]]):
+                self.page.window.width = 400
+                self.page.window.height = 800
+            
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self.page.bgcolor = ft.colors.BLACK
+            self.page.padding = 10
+            self.page.scroll = ft.ScrollMode.AUTO
+            
+            # Components
+            self.smile_detector = SmileDetector()
+            self.camera_manager = CameraManager()
+            self.alarm_manager = AlarmSoundManager()
+            
+            # Audio Setup
+            default_sound = self.alarm_manager.get_current_sound_path()
+            if not default_sound or not os.path.exists(default_sound):
+                 default_sound = "assets/sounds/urgent.wav"
+            
+            # Determine strict path (Flet assets logic)
+            sound_filename = os.path.basename(default_sound)
+            initial_src = f"/sounds/{sound_filename}"
+            
+            self.audio_player = ft.Audio(src=initial_src, autoplay=False, volume=self.alarm_manager.volume)
+            self.page.overlay.append(self.audio_player)
+            
+            # State
+            self.alarms = [] 
+            self.active_alarm_id = None 
+            self.is_alarm_ringing = False
+            self.bedside_mode_active = False
+            self.stopping_alarm_lock = False
+            
+            self.smile_detected = False
+            self.smile_progress = 0.0
+            self.current_smile_status = False
+            
+            # State for Threads
+            self.monitor_thread_running = True
+            
+            # Load Data
+            self.load_alarms()
+            self.load_assets()
+            
+            # UI Setup
+            self.setup_ui()
+            
+            # Check First Run (Permission Request)
+            self.check_first_run()
 
-        # Start Background Threads
-        self.start_clock_thread()
-        self.start_alarm_monitor_thread()
+            # Start Background Threads
+            self.start_clock_thread()
+            self.start_alarm_monitor_thread()
+            
+        except Exception as e:
+            # Emergency Error Display for Mobile Debugging
+            traceback_str = ""
+            try:
+                import traceback
+                traceback_str = traceback.format_exc()
+            except: pass
+            
+            self.page.clean()
+            self.page.add(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.icons.ERROR_OUTLINE, color=ft.colors.RED, size=50),
+                    ft.Text("Startup Error", size=24, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"Details: {str(e)}", color=ft.colors.RED_200),
+                    ft.Divider(),
+                    ft.Text(traceback_str, size=10, font_family="monospace")
+                ], scroll=ft.ScrollMode.AUTO),
+                padding=20,
+                expand=True
+            ))
+            self.page.update()
     
     def load_alarms(self):
         try:
@@ -422,15 +447,14 @@ class SmartAlarmApp:
                         b64 = base64.b64encode(buf).decode()
                         self.camera_display.src_base64 = b64
                         
-                        self.smile_progress = min(ratio / self.smile_detector.smile_threshold, 1.0)
-                        self.smile_progress_bar.value = self.smile_progress
+                        # Use ratio for display, but score for logic
                         self.current_smile_status = is_smiling
                         
                         if is_smiling:
-                            self.smile_status.value = "SMILING! 😊"
+                            self.smile_status.value = "SMILE DETECTED! 😊"
                             self.smile_status.color = ft.colors.GREEN_400
                         else:
-                             self.smile_status.value = f"Ratio: {ratio:.2f}"
+                             self.smile_status.value = "Face Found. Keep Smiling!"
                              self.smile_status.color = ft.colors.YELLOW_300
                         
                         try: self.page.update()
@@ -439,23 +463,36 @@ class SmartAlarmApp:
             time.sleep(0.05)
 
     def smile_monitor_loop(self):
-        start_smile = None
         last_play = time.time()
+        self.smile_score = 0.0 # 0.0 to 1.0
         
         while self.is_alarm_ringing:
-            # Loop Audio
-            if time.time() - last_play > 2.0:
-                 self.audio_player.seek(0)
-                 self.audio_player.play()
-                 last_play = time.time()
+            # Loop Audio (every 3 seconds to be safe)
+            if time.time() - last_play > 3.0:
+                 try:
+                     self.audio_player.seek(0)
+                     self.audio_player.play()
+                     last_play = time.time()
+                 except: pass
             
+            # Accumulator Logic
             if self.current_smile_status:
-                if start_smile is None: start_smile = time.time()
-                elif time.time() - start_smile > 2.0:
-                    self.stop_alarm()
-                    break
+                self.smile_score += 0.15 # Fill speed
             else:
-                start_smile = None
+                self.smile_score -= 0.05 # Decay speed (slow)
+            
+            self.smile_score = max(0.0, min(1.0, self.smile_score))
+            
+            # Update Progress Bar
+            self.smile_progress_bar.value = self.smile_score
+            self.smile_status.value = f"Smile Confidence: {int(self.smile_score * 100)}%"
+            
+            if self.smile_score >= 1.0:
+                self.stop_alarm()
+                break
+                
+            try: self.page.update()
+            except: pass
             time.sleep(0.1)
 
     def stop_alarm(self):
